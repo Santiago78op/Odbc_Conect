@@ -1,0 +1,15 @@
+# CICS PA Backend - Dependencias de producción
+
+# Framework web
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# Validación de datos
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Base de datos ODBC
+pyodbc==5.0.1
+
+# Utilidades
+python-dotenv==1.0.0
