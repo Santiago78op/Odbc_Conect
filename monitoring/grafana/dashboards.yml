@@ -1,0 +1,17 @@
+# Configuración de proveedores de dashboards para Grafana
+# ========================================================
+# Este archivo configura dónde Grafana busca los dashboards
+
+apiVersion: 1
+
+providers:
+  - name: 'CICS PA Dashboards'
+    orgId: 1
+    folder: 'CICS PA'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

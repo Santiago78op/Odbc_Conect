@@ -9,8 +9,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 from .core import get_settings, get_logger
+from .core.metrics import initialize_metrics
+from .core.middleware import (
+    PrometheusMetricsMiddleware,
+    SystemMetricsMiddleware,
+    RequestLoggingMiddleware
+)
 from .database import get_odbc_manager
-from .api import health, tables, query
+from .api import health, tables, query, metrics
 
 logger = get_logger(__name__)
 
@@ -27,6 +33,11 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
 
     try:
+        # Inicializar métricas de Prometheus
+        logger.info("Inicializando métricas de Prometheus...")
+        initialize_metrics(settings.app_name, settings.app_version)
+        logger.info("Métricas inicializadas correctamente")
+
         # Inicializar pool de conexiones ODBC
         logger.info("Inicializando pool de conexiones ODBC...")
         odbc_manager = get_odbc_manager()
@@ -82,6 +93,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Middleware de Prometheus (primero para capturar todas las requests)
+app.add_middleware(PrometheusMetricsMiddleware)
+
+# Middleware de métricas del sistema
+app.add_middleware(SystemMetricsMiddleware)
+
+# Middleware de logging detallado
+app.add_middleware(RequestLoggingMiddleware)
+
 
 # Exception handlers globales
 @app.exception_handler(Exception)
@@ -131,6 +151,9 @@ async def log_requests(request: Request, call_next):
 app.include_router(health.router, prefix=settings.api_prefix)
 app.include_router(tables.router, prefix=settings.api_prefix)
 app.include_router(query.router, prefix=settings.api_prefix)
+
+# Endpoint de métricas (sin prefijo para que sea accesible en /metrics)
+app.include_router(metrics.router)
 
 
 # Root endpoint

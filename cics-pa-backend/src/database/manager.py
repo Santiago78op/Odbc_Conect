@@ -3,12 +3,19 @@ Gestor de conexiones ODBC para DVM.
 Maneja el pool de conexiones y la ejecución de queries.
 """
 import pyodbc
+import time
 from typing import List, Dict, Any, Optional
 from contextlib import contextmanager
 import threading
 from queue import Queue, Empty
 
 from ..core import get_settings, get_logger
+from ..core.metrics import (
+    db_connections_active,
+    db_connections_total,
+    db_connection_errors_total,
+    record_db_query
+)
 
 logger = get_logger(__name__)
 
@@ -41,10 +48,20 @@ class ODBCConnectionPool:
                 timeout=self.settings.odbc_connection_timeout
             )
             connection.timeout = self.settings.odbc_query_timeout
+
+            # Registrar métrica de conexión exitosa
+            db_connections_total.labels(status='success').inc()
+            db_connections_active.inc()
+
             logger.info(f"Conexión ODBC creada: {self.settings.odbc_dsn}")
             return connection
 
         except pyodbc.Error as e:
+            # Registrar métrica de error de conexión
+            error_type = type(e).__name__
+            db_connections_total.labels(status='error').inc()
+            db_connection_errors_total.labels(error_type=error_type).inc()
+
             logger.error(f"Error al crear conexión ODBC: {e}")
             raise
 
@@ -111,12 +128,17 @@ class ODBCConnectionPool:
     def close_all(self):
         """Cierra todas las conexiones del pool"""
         logger.info("Cerrando todas las conexiones del pool")
+        connection_count = 0
         while not self._pool.empty():
             try:
                 conn = self._pool.get_nowait()
                 conn.close()
+                connection_count += 1
+                # Decrementar contador de conexiones activas
+                db_connections_active.dec()
             except:
                 pass
+        logger.info(f"Cerradas {connection_count} conexiones")
         self._initialized = False
 
 
@@ -153,6 +175,13 @@ class ODBCManager:
         """
         logger.info(f"Ejecutando query: {query[:100]}...")
 
+        # Determinar operación y tabla
+        operation = self._extract_operation(query)
+        table = self._extract_table(query)
+
+        # Iniciar temporizador
+        start_time = time.perf_counter()
+
         with self.pool.get_connection() as conn:
             cursor = conn.cursor()
 
@@ -177,14 +206,86 @@ class ODBCManager:
                     for row in rows
                 ]
 
+                # Registrar métrica de query exitosa
+                duration = time.perf_counter() - start_time
+                record_db_query(
+                    operation=operation,
+                    table=table,
+                    duration=duration,
+                    status='success'
+                )
+
                 logger.info(f"Query ejecutada exitosamente. Registros: {len(results)}")
                 return results
 
             except pyodbc.Error as e:
+                # Registrar métrica de error
+                duration = time.perf_counter() - start_time
+                error_type = type(e).__name__
+                record_db_query(
+                    operation=operation,
+                    table=table,
+                    duration=duration,
+                    status='error',
+                    error_type=error_type
+                )
+
                 logger.error(f"Error ejecutando query: {e}")
                 raise
             finally:
                 cursor.close()
+
+    @staticmethod
+    def _extract_operation(query: str) -> str:
+        """
+        Extrae el tipo de operación SQL de una query.
+
+        Args:
+            query: Query SQL
+
+        Returns:
+            Tipo de operación (SELECT, INSERT, UPDATE, etc.)
+        """
+        query_upper = query.strip().upper()
+        if query_upper.startswith('SELECT'):
+            return 'SELECT'
+        elif query_upper.startswith('INSERT'):
+            return 'INSERT'
+        elif query_upper.startswith('UPDATE'):
+            return 'UPDATE'
+        elif query_upper.startswith('DELETE'):
+            return 'DELETE'
+        else:
+            return 'OTHER'
+
+    @staticmethod
+    def _extract_table(query: str) -> str:
+        """
+        Extrae el nombre de la tabla de una query SQL.
+
+        Args:
+            query: Query SQL
+
+        Returns:
+            Nombre de la tabla o 'unknown'
+        """
+        try:
+            query_upper = query.strip().upper()
+            if 'FROM' in query_upper:
+                parts = query_upper.split('FROM')[1].strip().split()
+                if parts:
+                    return parts[0].strip('() ')
+            elif 'INTO' in query_upper:
+                parts = query_upper.split('INTO')[1].strip().split()
+                if parts:
+                    return parts[0].strip('() ')
+            elif 'UPDATE' in query_upper:
+                parts = query_upper.split('UPDATE')[1].strip().split()
+                if parts:
+                    return parts[0].strip('() ')
+            return 'unknown'
+        except:
+            return 'unknown'
 
     def get_table_columns(self, table_name: str) -> List[Dict[str, str]]:
         """

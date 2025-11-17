@@ -1,0 +1,277 @@
+# Reglas de alertas para CICS PA Backend
+# ========================================
+# Este archivo define las reglas de alertas que Prometheus evalúa
+# y envía a Alertmanager cuando se cumplen las condiciones.
+
+groups:
+  # ==========================================================================
+  # Alertas de disponibilidad y salud de la aplicación
+  # ==========================================================================
+  - name: application_health
+    interval: 30s
+    rules:
+      - alert: ApplicationDown
+        expr: up{job="cics-pa-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: backend
+          category: availability
+        annotations:
+          summary: "CICS PA Backend está caído"
+          description: "La aplicación CICS PA Backend no responde en {{ $labels.instance }}. Duración: {{ $value }}s"
+          impact: "Los usuarios no pueden acceder a la aplicación"
+          action: "Verificar logs del contenedor y estado del servicio"
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(cics_pa_http_requests_total{status_code=~"5.."}[5m]))
+          /
+          sum(rate(cics_pa_http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: backend
+          category: errors
+        annotations:
+          summary: "Alta tasa de errores HTTP 5xx"
+          description: "La tasa de errores 5xx es {{ $value | humanizePercentage }} en los últimos 5 minutos"
+          impact: "Los usuarios están experimentando errores al usar la aplicación"
+          action: "Revisar logs de excepciones y verificar conexiones a DVM"
+
+      - alert: CriticalErrorRate
+        expr: |
+          sum(rate(cics_pa_http_requests_total{status_code=~"5.."}[5m]))
+          /
+          sum(rate(cics_pa_http_requests_total[5m])) > 0.20
+        for: 2m
+        labels:
+          severity: critical
+          component: backend
+          category: errors
+        annotations:
+          summary: "Tasa crítica de errores HTTP 5xx"
+          description: "La tasa de errores 5xx es {{ $value | humanizePercentage }} - CRÍTICO"
+          impact: "La mayoría de las requests están fallando"
+          action: "Intervención inmediata requerida. Verificar estado de DVM y logs de aplicación"
+
+  # ==========================================================================
+  # Alertas de rendimiento y latencia
+  # ==========================================================================
+  - name: application_performance
+    interval: 30s
+    rules:
+      - alert: HighRequestLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(cics_pa_http_request_duration_seconds_bucket[5m])) by (le, endpoint)
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: backend
+          category: performance
+        annotations:
+          summary: "Alta latencia en requests HTTP"
+          description: "El percentil 95 de latencia es {{ $value }}s en el endpoint {{ $labels.endpoint }}"
+          impact: "Los usuarios experimentan respuestas lentas"
+          action: "Revisar queries ODBC lentas y optimizar consultas"
+
+      - alert: VeryHighRequestLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(cics_pa_http_request_duration_seconds_bucket[5m])) by (le, endpoint)
+          ) > 10
+        for: 2m
+        labels:
+          severity: critical
+          component: backend
+          category: performance
+        annotations:
+          summary: "Latencia crítica en requests HTTP"
+          description: "El percentil 95 de latencia es {{ $value }}s en el endpoint {{ $labels.endpoint }} - CRÍTICO"
+          impact: "La aplicación está prácticamente inutilizable"
+          action: "Intervención inmediata. Verificar estado de DVM y recursos del sistema"
+
+      - alert: HighRequestsInProgress
+        expr: sum(cics_pa_http_requests_in_progress) > 50
+        for: 5m
+        labels:
+          severity: warning
+          component: backend
+          category: performance
+        annotations:
+          summary: "Muchas requests en progreso"
+          description: "Hay {{ $value }} requests en progreso simultáneamente"
+          impact: "Posible saturación del servidor"
+          action: "Verificar carga del sistema y considerar escalado"
+
+  # ==========================================================================
+  # Alertas de base de datos ODBC
+  # ==========================================================================
+  - name: database_health
+    interval: 30s
+    rules:
+      - alert: DatabaseConnectionErrors
+        expr: rate(cics_pa_db_connection_errors_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+          component: database
+          category: connectivity
+        annotations:
+          summary: "Errores de conexión a DVM"
+          description: "Tasa de errores de conexión ODBC: {{ $value }} errores/segundo"
+          impact: "La aplicación no puede conectarse a DVM"
+          action: "Verificar conectividad ODBC, DSN y credenciales"
+
+      - alert: SlowDatabaseQueries
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(cics_pa_db_query_duration_seconds_bucket[5m])) by (le, table, operation)
+          ) > 30
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+          category: performance
+        annotations:
+          summary: "Queries ODBC lentas"
+          description: "Queries en tabla {{ $labels.table }} ({{ $labels.operation }}) tardan {{ $value }}s (p95)"
+          impact: "Respuestas lentas de la aplicación"
+          action: "Optimizar queries o añadir índices en DVM"
+
+      - alert: DatabaseQueryErrors
+        expr: rate(cics_pa_db_query_errors_total[5m]) > 0.5
+        for: 2m
+        labels:
+          severity: warning
+          component: database
+          category: errors
+        annotations:
+          summary: "Errores en queries ODBC"
+          description: "Tasa de errores en queries: {{ $value }} errores/segundo ({{ $labels.error_type }})"
+          impact: "Algunas operaciones de base de datos están fallando"
+          action: "Revisar logs y verificar estructura de tablas en DVM"
+
+      - alert: LowDatabaseConnections
+        expr: cics_pa_db_connections_active < 2
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+          category: connectivity
+        annotations:
+          summary: "Pocas conexiones ODBC activas"
+          description: "Solo {{ $value }} conexiones ODBC activas en el pool"
+          impact: "Pool de conexiones podría estar degradado"
+          action: "Verificar configuración del pool y estado de conexiones"
+
+  # ==========================================================================
+  # Alertas de recursos del sistema
+  # ==========================================================================
+  - name: system_resources
+    interval: 30s
+    rules:
+      - alert: HighMemoryUsage
+        expr: cics_pa_application_memory_usage_bytes > 2147483648  # 2GB
+        for: 5m
+        labels:
+          severity: warning
+          component: backend
+          category: resources
+        annotations:
+          summary: "Alto uso de memoria"
+          description: "La aplicación está usando {{ $value | humanize1024 }}B de memoria"
+          impact: "Posible degradación de rendimiento"
+          action: "Verificar memory leaks y considerar aumentar recursos"
+
+      - alert: CriticalMemoryUsage
+        expr: cics_pa_application_memory_usage_bytes > 4294967296  # 4GB
+        for: 2m
+        labels:
+          severity: critical
+          component: backend
+          category: resources
+        annotations:
+          summary: "Uso crítico de memoria"
+          description: "La aplicación está usando {{ $value | humanize1024 }}B de memoria - CRÍTICO"
+          impact: "Riesgo de OOM (Out of Memory)"
+          action: "Reiniciar aplicación o aumentar recursos inmediatamente"
+
+      - alert: HighCPUUsage
+        expr: cics_pa_application_cpu_usage_percent > 80
+        for: 10m
+        labels:
+          severity: warning
+          component: backend
+          category: resources
+        annotations:
+          summary: "Alto uso de CPU"
+          description: "La aplicación está usando {{ $value }}% de CPU"
+          impact: "Degradación de rendimiento"
+          action: "Verificar procesos y considerar optimización o escalado"
+
+  # ==========================================================================
+  # Alertas de negocio - CICS Abends
+  # ==========================================================================
+  - name: business_metrics
+    interval: 1m
+    rules:
+      - alert: HighAbendRate
+        expr: rate(cics_pa_abends_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: cics
+          category: business
+        annotations:
+          summary: "Alta tasa de abends en CICS"
+          description: "Tasa de abends: {{ $value }} abends/segundo en región {{ $labels.region }}"
+          impact: "Posibles problemas en aplicaciones CICS"
+          action: "Investigar programa {{ $labels.program }} con código {{ $labels.abend_code }}"
+
+      - alert: CriticalAbendRate
+        expr: rate(cics_pa_abends_total[5m]) > 50
+        for: 2m
+        labels:
+          severity: critical
+          component: cics
+          category: business
+        annotations:
+          summary: "Tasa crítica de abends en CICS"
+          description: "Tasa crítica: {{ $value }} abends/segundo - Región: {{ $labels.region }}"
+          impact: "Problemas severos en aplicaciones CICS"
+          action: "Intervención inmediata. Verificar región CICS y aplicaciones"
+
+  # ==========================================================================
+  # Alertas de Prometheus y monitoreo
+  # ==========================================================================
+  - name: monitoring_health
+    interval: 1m
+    rules:
+      - alert: PrometheusTargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: warning
+          component: monitoring
+          category: availability
+        annotations:
+          summary: "Target de Prometheus caído"
+          description: "El target {{ $labels.job }} en {{ $labels.instance }} está caído"
+          impact: "Pérdida de visibilidad de métricas"
+          action: "Verificar estado del servicio y conectividad"
+
+      - alert: PrometheusTooManyRestarts
+        expr: changes(process_start_time_seconds{job=~"prometheus|alertmanager"}[15m]) > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: monitoring
+          category: stability
+        annotations:
+          summary: "Demasiados reinicios de {{ $labels.job }}"
+          description: "{{ $labels.job }} se ha reiniciado {{ $value }} veces en 15 minutos"
+          impact: "Posible inestabilidad del sistema de monitoreo"
+          action: "Revisar logs y recursos del sistema"

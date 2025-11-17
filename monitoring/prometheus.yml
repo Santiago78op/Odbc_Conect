@@ -1,0 +1,103 @@
+# Configuración de Prometheus para CICS PA Backend
+# =====================================================
+# Este archivo configura Prometheus para monitorear la aplicación
+# FastAPI y exponer métricas a Grafana.
+
+global:
+  # Intervalo de scraping por defecto
+  scrape_interval: 15s
+  # Timeout para scraping
+  scrape_timeout: 10s
+  # Intervalo de evaluación de reglas
+  evaluation_interval: 15s
+  # Labels externos que se agregan a todas las métricas
+  external_labels:
+    environment: 'production'
+    application: 'cics-pa-backend'
+    cluster: 'cics-monitoring'
+
+# Configuración de Alertmanager
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+      scheme: http
+      timeout: 10s
+
+# Archivos de reglas de alertas
+rule_files:
+  - '/etc/prometheus/alert_rules.yml'
+
+# Configuración de scraping
+scrape_configs:
+  # ============================================================================
+  # Scraping del backend CICS PA
+  # ============================================================================
+  - job_name: 'cics-pa-backend'
+    # Intervalo específico para esta aplicación
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    # Ruta donde se exponen las métricas
+    metrics_path: '/metrics'
+    # Configuración estática de targets
+    static_configs:
+      - targets:
+          - 'cics-pa-backend:8000'
+        labels:
+          service: 'backend'
+          tier: 'application'
+          language: 'python'
+          framework: 'fastapi'
+
+  # ============================================================================
+  # Scraping de Prometheus (auto-monitoreo)
+  # ============================================================================
+  - job_name: 'prometheus'
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - 'localhost:9090'
+        labels:
+          service: 'prometheus'
+          tier: 'monitoring'
+
+  # ============================================================================
+  # Scraping de Alertmanager
+  # ============================================================================
+  - job_name: 'alertmanager'
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - 'alertmanager:9093'
+        labels:
+          service: 'alertmanager'
+          tier: 'monitoring'
+
+  # ============================================================================
+  # Node Exporter (opcional - métricas del servidor)
+  # ============================================================================
+  - job_name: 'node-exporter'
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - 'node-exporter:9100'
+        labels:
+          service: 'node-exporter'
+          tier: 'infrastructure'
+
+# Configuración de almacenamiento
+storage:
+  tsdb:
+    # Retención de datos
+    retention.time: 30d
+    # Tamaño máximo de almacenamiento
+    retention.size: 10GB
+    # Directorio de datos
+    path: /prometheus/data
+
+# Configuración de logging
+# Niveles: debug, info, warn, error
+log:
+  level: info
+  format: json

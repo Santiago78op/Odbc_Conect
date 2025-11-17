@@ -1,0 +1,238 @@
+# Configuración de Alertmanager para CICS PA Backend
+# ====================================================
+# Este archivo configura cómo se gestionan y notifican las alertas
+# generadas por Prometheus.
+
+global:
+  # Tiempo de resolución por defecto si no se especifica
+  resolve_timeout: 5m
+
+  # Configuración de SMTP (Email) - AJUSTAR CON DATOS REALES
+  smtp_from: 'alertmanager@cics-pa.local'
+  smtp_smarthost: 'smtp.example.com:587'
+  smtp_auth_username: 'alertmanager@cics-pa.local'
+  smtp_auth_password: 'PASSWORD_AQUI'
+  smtp_require_tls: true
+
+  # Configuración de Slack - AJUSTAR CON WEBHOOK REAL
+  # slack_api_url: 'https://hooks.slack.com/services/YOUR/WEBHOOK/URL'
+
+# Plantillas de mensajes personalizados
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+
+# Rutas de enrutamiento de alertas
+route:
+  # Receptor por defecto
+  receiver: 'default-receiver'
+
+  # Tiempo de agrupación de alertas
+  group_wait: 10s
+  group_interval: 5m
+  repeat_interval: 3h
+
+  # Agrupar por estas labels
+  group_by: ['alertname', 'severity', 'component']
+
+  # Rutas específicas por tipo de alerta
+  routes:
+    # ========================================================================
+    # Alertas críticas - Notificación inmediata
+    # ========================================================================
+    - match:
+        severity: critical
+      receiver: 'critical-alerts'
+      group_wait: 5s
+      group_interval: 2m
+      repeat_interval: 30m
+      continue: false
+
+    # ========================================================================
+    # Alertas de base de datos
+    # ========================================================================
+    - match:
+        component: database
+      receiver: 'database-team'
+      group_wait: 15s
+      group_interval: 5m
+      repeat_interval: 1h
+      continue: false
+
+    # ========================================================================
+    # Alertas de negocio (CICS Abends)
+    # ========================================================================
+    - match:
+        category: business
+      receiver: 'business-team'
+      group_wait: 30s
+      group_interval: 10m
+      repeat_interval: 2h
+      routes:
+        # Subrata para abends críticos
+        - match:
+            severity: critical
+          receiver: 'critical-business-alerts'
+          group_wait: 10s
+          repeat_interval: 1h
+
+    # ========================================================================
+    # Alertas de rendimiento
+    # ========================================================================
+    - match:
+        category: performance
+      receiver: 'performance-team'
+      group_wait: 30s
+      group_interval: 10m
+      repeat_interval: 4h
+
+    # ========================================================================
+    # Alertas de monitoreo
+    # ========================================================================
+    - match:
+        component: monitoring
+      receiver: 'monitoring-team'
+      group_wait: 1m
+      group_interval: 15m
+      repeat_interval: 12h
+
+# Configuración de inhibición
+# Las alertas especificadas pueden suprimir otras alertas
+inhibit_rules:
+  # Si la aplicación está caída, no alertar sobre errores HTTP
+  - source_match:
+      alertname: 'ApplicationDown'
+    target_match:
+      component: 'backend'
+    equal: ['instance']
+
+  # Si hay errores críticos de conexión, no alertar sobre queries lentas
+  - source_match:
+      alertname: 'DatabaseConnectionErrors'
+    target_match:
+      component: 'database'
+    equal: ['instance']
+
+  # Alertas críticas suprimen warnings del mismo tipo
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'instance']
+
+# Definición de receptores
+receivers:
+  # ==========================================================================
+  # Receptor por defecto - Email genérico
+  # ==========================================================================
+  - name: 'default-receiver'
+    email_configs:
+      - to: 'team-cics-pa@example.com'
+        headers:
+          Subject: '[CICS PA] {{ .GroupLabels.alertname }} - {{ .GroupLabels.severity }}'
+        html: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <style>
+              body { font-family: Arial, sans-serif; }
+              .critical { color: #d32f2f; }
+              .warning { color: #f57c00; }
+              .info { color: #1976d2; }
+            </style>
+          </head>
+          <body>
+            <h2 class="{{ .GroupLabels.severity }}">
+              Alerta: {{ .GroupLabels.alertname }}
+            </h2>
+            <p><strong>Severidad:</strong> {{ .GroupLabels.severity }}</p>
+            <p><strong>Componente:</strong> {{ .GroupLabels.component }}</p>
+            <hr>
+            {{ range .Alerts }}
+            <h3>{{ .Annotations.summary }}</h3>
+            <p>{{ .Annotations.description }}</p>
+            <p><strong>Impacto:</strong> {{ .Annotations.impact }}</p>
+            <p><strong>Acción requerida:</strong> {{ .Annotations.action }}</p>
+            <p><strong>Tiempo:</strong> {{ .StartsAt.Format "2006-01-02 15:04:05" }}</p>
+            <hr>
+            {{ end }}
+          </body>
+          </html>
+
+  # ==========================================================================
+  # Alertas críticas - Múltiples canales
+  # ==========================================================================
+  - name: 'critical-alerts'
+    email_configs:
+      - to: 'oncall-cics-pa@example.com,manager-cics-pa@example.com'
+        headers:
+          Subject: '[CRÍTICO] [CICS PA] {{ .GroupLabels.alertname }}'
+        send_resolved: true
+
+    # Webhook para integración con sistemas externos (PagerDuty, Opsgenie, etc.)
+    webhook_configs:
+      - url: 'http://localhost:5001/alerts'
+        send_resolved: true
+
+    # Slack (descomentar y configurar)
+    # slack_configs:
+    #   - channel: '#cics-pa-critical'
+    #     title: 'ALERTA CRÍTICA: {{ .GroupLabels.alertname }}'
+    #     text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+    #     color: 'danger'
+    #     send_resolved: true
+
+  # ==========================================================================
+  # Equipo de base de datos
+  # ==========================================================================
+  - name: 'database-team'
+    email_configs:
+      - to: 'dba-team@example.com'
+        headers:
+          Subject: '[DB] [CICS PA] {{ .GroupLabels.alertname }}'
+        send_resolved: true
+
+  # ==========================================================================
+  # Equipo de negocio - Alertas de CICS Abends
+  # ==========================================================================
+  - name: 'business-team'
+    email_configs:
+      - to: 'cics-business-team@example.com'
+        headers:
+          Subject: '[BUSINESS] [CICS PA] {{ .GroupLabels.alertname }}'
+        send_resolved: true
+
+  - name: 'critical-business-alerts'
+    email_configs:
+      - to: 'cics-business-team@example.com,cics-manager@example.com'
+        headers:
+          Subject: '[CRÍTICO] [BUSINESS] [CICS PA] {{ .GroupLabels.alertname }}'
+        send_resolved: true
+
+  # ==========================================================================
+  # Equipo de rendimiento
+  # ==========================================================================
+  - name: 'performance-team'
+    email_configs:
+      - to: 'performance-team@example.com'
+        headers:
+          Subject: '[PERFORMANCE] [CICS PA] {{ .GroupLabels.alertname }}'
+        send_resolved: true
+
+  # ==========================================================================
+  # Equipo de monitoreo
+  # ==========================================================================
+  - name: 'monitoring-team'
+    email_configs:
+      - to: 'monitoring-team@example.com'
+        headers:
+          Subject: '[MONITORING] [CICS PA] {{ .GroupLabels.alertname }}'
+        send_resolved: true
+
+# Configuración de la interfaz web
+web:
+  # Puerto de escucha (por defecto 9093)
+  # listen_address: ':9093'
+
+  # Configuración de logging
+  # log_level: info
+  # log_format: json

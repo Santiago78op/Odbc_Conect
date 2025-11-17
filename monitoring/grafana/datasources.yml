@@ -1,0 +1,22 @@
+# Configuración de datasources para Grafana
+# ==========================================
+# Este archivo configura Prometheus como datasource en Grafana
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s
+      queryTimeout: 60s
+      # Configuración de gráficos
+      graphiteVersion: '1.1'
+      tlsAuth: false
+      tlsAuthWithCACert: false
+    version: 1
